@@ -1,0 +1,66 @@
+#!/bin/bash
+login=<login>
+pass=<password>
+addr=<IP address>
+port=<http port>
+camname=<Camera Name>
+camurl=http://$login:$pass@$addr:$port/ISAPI/ContentMgmt
+odir="$PWD"
+cd "$TMPDIR"
+toff=`date +%z`
+if [ "$1" ]; then
+    odir="$1"
+else
+	echo "usage: $0 output_dir [YYYY-MM-DD]"
+	echo "If date isn't specified, defaults to yesterday"
+	exit 1
+fi
+if [ "$2" ]; then
+	fdate="$2"
+else
+    fdate=`date -v-1d "+%Y-%m-%d"`
+    echo "No date specified, using $fdate"
+fi
+from=`TZ=UTC date -jf "%Y-%m-%dT%H:%M:%S %z" "${fdate}T00:00:00 $toff" "+%Y-%m-%dT%H:%M:%SZ"`
+to=`TZ=UTC date -jf "%Y-%m-%dT%H:%M:%S %z" "${fdate}T23:59:59 $toff" "+%Y-%m-%dT%H:%M:%SZ"`
+echo "Retrieving video file list for $fdate..."
+cat <<-EOF |
+<?xml version="1.0" encoding="utf-8"?>
+<CMSearchDescription>
+	<searchID>xxxxx</searchID>
+	<trackIDList>
+		<trackID>101</trackID>
+	</trackIDList>
+	<timeSpanList>
+		<timeSpan>
+			<startTime>$from</startTime>
+			<endTime>$to</endTime>
+		</timeSpan>
+	</timeSpanList>
+	<maxResults>50</maxResults>
+	<searchResultPostion>0</searchResultPostion>
+	<metadataList>
+		<metadataDescriptor>//recordType.meta.std-cgi.com</metadataDescriptor>
+	</metadataList>
+</CMSearchDescription>
+EOF
+curl -d @- -s $camurl/search | grep playbackURI > uris
+nfiles=`wc -l < uris`
+nfiles=`expr $nfiles + 0`
+fileno=1
+for uri in `cat uris`; do
+    file=`echo $uri | sed 's:.*name=::' | sed 's:&amp.*::'`.mp4
+    echo "Downloading file $fileno of $nfiles ($file)"
+cat <<-EOF |
+<?xml version="1.0" encoding="utf-8"?>
+<downloadRequest>
+$uri
+</downloadRequest>
+EOF
+curl -X GET -d @- -# $camurl/download > $file
+fileno=`expr $fileno + 1`
+done
+ffmpeg -f concat -safe 0 -i <(for f in ch01*.mp4; do echo "file '$PWD/$f'"; done) -c copy out.mp4
+ffmpeg -err_detect ignore_err -i out.mp4 -c copy fixed.mp4
+ffmpeg -y -i fixed.mp4 -c:v libx264 -filter:v "setpts=0.005*PTS" "$odir/$camname $fdate.mp4"
+rm ch01*.mp4 out.mp4 fixed.mp4 uris
